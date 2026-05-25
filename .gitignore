@@ -1,0 +1,20 @@
+# Bỏ qua toàn bộ file Jupyter Notebook
+*.ipynb
+
+# Bỏ qua thư mục môi trường ảo (Cực kỳ quan trọng)
+.venv/
+venv/
+env/
+
+# Bỏ qua các file dữ liệu nặng hoặc file kết quả
+*.csv
+*.xlsx
+*.parquet
+data/
+outputs/
+
+# Bỏ qua rác cấu hình của hệ thống và IDE
+__pycache__/
+.ipynb_checkpoints/
+.vscode/
+.DS_Store
