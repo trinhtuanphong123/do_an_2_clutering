@@ -3,19 +3,24 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import skew, kurtosis
+from sklearn.preprocessing import StandardScaler
+
+from sklearn.impute import SimpleImputer
+from scipy.stats import spearmanr   
+
+
+
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score, adjusted_rand_score, silhouette_samples
+from sklearn.decomposition import PCA
+
 
 # Phase 1:
 df = pd.read_csv(r"D:\do_an_2_clustering\data\CC GENERAL.csv")
 
 
-
-# ============================================================
 # PHASE 2. DATA AUDIT
-# Assumption: df is already loaded successfully.
-# Example:
-#   df = pd.read_csv(...)
-# ============================================================
-
 
 # ------------------------------------------------------------
 # 1. Basic validation
@@ -226,6 +231,45 @@ def audit_soft_positive_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
+def audit_purchases_decomposition(df: pd.DataFrame, tol: float = 1.0) -> pd.DataFrame:
+    """
+    Check: PURCHASES == ONEOFF_PURCHASES + INSTALLMENTS_PURCHASES (within tol).
+ 
+    Returns a one-row summary DataFrame so it fits naturally into
+    run_phase_2_data_audit alongside the other audit tables.
+    """
+    required = ["PURCHASES", "ONEOFF_PURCHASES", "INSTALLMENTS_PURCHASES"]
+    missing_cols = [c for c in required if c not in df.columns]
+    if missing_cols:
+        return pd.DataFrame([{
+            "check": "purchases_decomposition",
+            "status": "skipped",
+            "reason": f"missing columns: {missing_cols}",
+            "violation_count": np.nan,
+            "violation_rate_pct": np.nan,
+            "max_abs_diff": np.nan,
+        }])
+ 
+    reconstructed = df["ONEOFF_PURCHASES"] + df["INSTALLMENTS_PURCHASES"]
+    diff = (df["PURCHASES"] - reconstructed).abs()
+ 
+    # Only rows where all three columns are non-null
+    valid_mask = df[required].notna().all(axis=1)
+    diff_valid = diff[valid_mask]
+ 
+    violations = (diff_valid > tol).sum()
+    total_valid = valid_mask.sum()
+ 
+    return pd.DataFrame([{
+        "check": "purchases_decomposition",
+        "status": "ok" if violations == 0 else "VIOLATIONS FOUND",
+        "reason": "PURCHASES == ONEOFF + INSTALLMENTS",
+        "violation_count": int(violations),
+        "violation_rate_pct": round(violations / total_valid * 100, 4) if total_valid > 0 else np.nan,
+        "max_abs_diff": round(diff_valid.max(), 4),
+    }])
+
+
 
 # ------------------------------------------------------------
 # 5. Distribution and outlier audit
@@ -378,6 +422,7 @@ def run_phase_2_data_audit(
     frequency_columns: list[str] | None = None,
     nonnegative_columns: list[str] | None = None,
     positive_columns: list[str] | None = None,
+    purchases_decomp_tol: float = 1.0,
     show_plots: bool = True
 ):
     validate_input_dataframe(df)
@@ -415,6 +460,7 @@ def run_phase_2_data_audit(
     frequency_audit = audit_frequency_constraints(audit_df[frequency_columns])
     nonnegative_audit = audit_nonnegative_constraints(audit_df[nonnegative_columns])
     positive_soft_audit = audit_soft_positive_columns(audit_df[positive_columns])
+    purchases_decomp_audit = audit_purchases_decomposition(audit_df)
 
     distribution_report = build_distribution_report(
         audit_df[[c for c in audit_df.columns if c not in id_columns]]
@@ -430,8 +476,10 @@ def run_phase_2_data_audit(
         "frequency_audit": frequency_audit,
         "nonnegative_audit": nonnegative_audit,
         "positive_soft_audit": positive_soft_audit,
+        "purchases_decomposition_audit": purchases_decomp_audit,
         "distribution_report": distribution_report,
         "log1p_candidates": log1p_candidates
+        
     }
 
     # -------------------------------
@@ -456,11 +504,13 @@ def run_phase_2_data_audit(
     print("\n[Soft Positive Columns Audit]")
     print(positive_soft_audit.to_string(index=False))
 
+    print("\n[Purchases Decomposition Audit]")
+    print(purchases_decomp_audit.to_string(index=False))
+
     print("\n[Most Skewed / Outlier-Heavy Features]")
     print(distribution_report.head(15).to_string(index=False))
 
-    print("\n[Suggested log1p candidates]")
-    print(log1p_candidates)
+
 
     print("\n[Duplicate Rows]")
     print(f"duplicate_count = {duplicate_report['duplicate_count']}")
@@ -472,6 +522,7 @@ def run_phase_2_data_audit(
         plot_boxplots(audit_df, columns=numeric_cols_for_plots)
 
     return audit_results
+
 
 
 audit_results = run_phase_2_data_audit(
@@ -578,110 +629,67 @@ def phase_3b_drop_correlated_features(
     threshold: float = 0.7
 ):
     df = df.copy()
-
-    # -----------------------------------
-    # 1. Candidate features (numeric only)
-    # -----------------------------------
+ 
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-    # Remove obvious non-model columns if still present
-    exclude_cols = ["TENURE"]  # keep for feature engineering, not clustering
+    exclude_cols = ["TENURE"]
     candidate_cols = [c for c in numeric_cols if c not in exclude_cols]
-
+ 
     X = df[candidate_cols].copy()
-
-    # -----------------------------------
-    # 2. Correlation matrix
-    # -----------------------------------
-    corr_matrix = X.corr().abs()
-
-    # -----------------------------------
-    # 3. Build graph (adjacency list)
-    # -----------------------------------
+ 
+    # ── PATCH: Spearman instead of Pearson ───────────────────
+    # spearmanr returns (correlation_matrix, pvalue_matrix) when
+    # given a 2-D array; we only need the correlation matrix.
+    corr_values, _ = spearmanr(X.values)
+    corr_matrix = pd.DataFrame(
+        np.abs(corr_values),
+        index=candidate_cols,
+        columns=candidate_cols
+    )
+    # ─────────────────────────────────────────────────────────
+ 
     graph = {col: set() for col in candidate_cols}
-
     for i in range(len(candidate_cols)):
         for j in range(i + 1, len(candidate_cols)):
             col_i = candidate_cols[i]
             col_j = candidate_cols[j]
-
             if corr_matrix.loc[col_i, col_j] > threshold:
                 graph[col_i].add(col_j)
                 graph[col_j].add(col_i)
-
-    # -----------------------------------
-    # 4. Find connected components
-    # -----------------------------------
+ 
     visited = set()
     components = []
-
     for col in candidate_cols:
         if col not in visited:
             stack = [col]
             component = set()
-
             while stack:
                 node = stack.pop()
                 if node not in visited:
                     visited.add(node)
                     component.add(node)
                     stack.extend(graph[node] - visited)
-
             components.append(component)
-
-    # -----------------------------------
-    # 5. Priority ranking (important)
-    # -----------------------------------
+ 
     priority = [
-        # behavioral ratios (highest value)
-        "LIMIT_USAGE",
-        "PAYMENT_MIN_RATIO",
-        "CASH_ADVANCE_RATIO",
-        "INSTALLMENT_PURCHASE_RATIO",
-
-        # normalized behavior
-        "MONTHLY_AVG_PURCHASES",
-        "MONTHLY_AVG_CASH_ADVANCE",
-
-        # frequencies
-        "PURCHASES_FREQUENCY",
-        "CASH_ADVANCE_FREQUENCY",
-        "PRC_FULL_PAYMENT",
-
-        # raw monetary values
-        "BALANCE",
-        "PURCHASES",
-        "ONEOFF_PURCHASES",
-        "INSTALLMENTS_PURCHASES",
-        "CASH_ADVANCE",
-        "PAYMENTS",
-        "MINIMUM_PAYMENTS",
-        "CREDIT_LIMIT",
-
-        # fallback
-        "PURCHASES_TRX",
-        "CASH_ADVANCE_TRX"
+        "LIMIT_USAGE", "PAYMENT_MIN_RATIO", "CASH_ADVANCE_RATIO",
+        "INSTALLMENT_PURCHASE_RATIO", "MONTHLY_AVG_PURCHASES",
+        "MONTHLY_AVG_CASH_ADVANCE", "PURCHASES_FREQUENCY",
+        "CASH_ADVANCE_FREQUENCY", "PRC_FULL_PAYMENT", "BALANCE",
+        "PURCHASES", "ONEOFF_PURCHASES", "INSTALLMENTS_PURCHASES",
+        "CASH_ADVANCE", "PAYMENTS", "MINIMUM_PAYMENTS", "CREDIT_LIMIT",
+        "PURCHASES_TRX", "CASH_ADVANCE_TRX"
     ]
-
     rank = {col: i for i, col in enumerate(priority)}
-
-    # -----------------------------------
-    # 6. Select best feature per group
-    # -----------------------------------
+ 
     kept_cols = []
     dropped_info = []
-
     for comp in components:
         comp = list(comp)
-
         if len(comp) == 1:
             kept_cols.append(comp[0])
             continue
-
-        # choose best feature (lowest rank)
         best = min(comp, key=lambda c: rank.get(c, 10**6))
         kept_cols.append(best)
-
         for col in comp:
             if col != best:
                 dropped_info.append({
@@ -689,13 +697,10 @@ def phase_3b_drop_correlated_features(
                     "dropped_feature": col,
                     "group_size": len(comp)
                 })
-
-    # -----------------------------------
-    # 7. Build output
-    # -----------------------------------
+ 
     df_reduced = df[kept_cols].copy()
     drop_log = pd.DataFrame(dropped_info)
-
+ 
     return df_reduced, kept_cols, drop_log
 
 
@@ -704,6 +709,7 @@ df_phase3_reduced, kept_cols, drop_log = phase_3b_drop_correlated_features(df_ph
 
 print("Final feature count:", len(kept_cols))
 drop_log.head()
+
 
 
 
@@ -820,42 +826,97 @@ def phase_5a_scan_models(X_scaled, k_range=range(2, 9), random_state=42):
 
 
 
-def phase_5b_summarize_candidates(kmeans_results, gmm_results):
-    summary = {}
-
-    # --- KMeans best ---
-    summary["kmeans_best_silhouette"] = kmeans_results.loc[
-        kmeans_results["silhouette"].idxmax()
-    ]
-
-    summary["kmeans_best_davies"] = kmeans_results.loc[
-        kmeans_results["davies_bouldin"].idxmin()
-    ]
-
-    summary["kmeans_best_calinski"] = kmeans_results.loc[
-        kmeans_results["calinski_harabasz"].idxmax()
-    ]
-
-    # --- GMM best ---
-    summary["gmm_best_bic"] = gmm_results.loc[
-        gmm_results["bic"].idxmin()
-    ]
-
-    summary["gmm_best_aic"] = gmm_results.loc[
-        gmm_results["aic"].idxmin()
-    ]
-
-    summary["gmm_best_silhouette"] = gmm_results.loc[
-        gmm_results["silhouette"].idxmax()
-    ]
-
-    summary_df = pd.DataFrame(summary).T
-
-    print("\n=== MODEL SELECTION SUMMARY ===")
-    print(summary_df)
-
-    return summary_df
-
+def phase_5b_summarize_candidates(
+    kmeans_results: pd.DataFrame,
+    gmm_results: pd.DataFrame,
+    top_n: int = 5
+) -> tuple[pd.DataFrame, int, str]:
+    """
+    Returns
+    -------
+    ranking_df   : wide table showing rank of each k per metric
+    best_k       : recommended k (most consistent across metrics)
+    best_cov     : best GMM covariance type for that k
+    """
+ 
+    # ── 1. KMeans rankings ───────────────────────────────────
+    km = kmeans_results.copy()
+ 
+    # Higher silhouette = better → rank ascending=False
+    km["rank_silhouette"] = km["silhouette"].rank(ascending=False, method="min").astype(int)
+    # Lower davies_bouldin = better → rank ascending=True
+    km["rank_davies"]     = km["davies_bouldin"].rank(ascending=True,  method="min").astype(int)
+    # Higher calinski = better → rank ascending=False
+    km["rank_calinski"]   = km["calinski_harabasz"].rank(ascending=False, method="min").astype(int)
+ 
+    km["kmeans_avg_rank"] = (
+        km["rank_silhouette"] + km["rank_davies"] + km["rank_calinski"]
+    ) / 3.0
+ 
+    kmeans_ranking = (
+        km[["k", "silhouette", "davies_bouldin", "calinski_harabasz",
+            "rank_silhouette", "rank_davies", "rank_calinski", "kmeans_avg_rank"]]
+        .sort_values("kmeans_avg_rank")
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+ 
+    # ── 2. GMM rankings (all cov types pooled) ───────────────
+    gm = gmm_results.copy()
+    gm["rank_bic"]       = gm["bic"].rank(ascending=True,  method="min").astype(int)
+    gm["rank_aic"]       = gm["aic"].rank(ascending=True,  method="min").astype(int)
+    gm["rank_sil_gmm"]   = gm["silhouette"].rank(ascending=False, method="min").astype(int)
+ 
+    gm["gmm_avg_rank"] = (
+        gm["rank_bic"] + gm["rank_aic"] + gm["rank_sil_gmm"]
+    ) / 3.0
+ 
+    gmm_ranking = (
+        gm[["k", "covariance_type", "bic", "aic", "silhouette",
+            "rank_bic", "rank_aic", "rank_sil_gmm", "gmm_avg_rank"]]
+        .sort_values("gmm_avg_rank")
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+ 
+    # ── 3. Derive recommended k ──────────────────────────────
+    # Strategy: k that appears most often in top-3 of KMeans
+    # across the three metrics.  Ties broken by avg_rank.
+    top3_per_metric = pd.concat([
+        km.nsmallest(3, "rank_silhouette")[["k"]],
+        km.nsmallest(3, "rank_davies")[["k"]],
+        km.nsmallest(3, "rank_calinski")[["k"]],
+    ])
+    vote_counts = top3_per_metric["k"].value_counts()
+    # Among k values with the most votes, take the one with
+    # lowest kmeans_avg_rank as tiebreaker.
+    top_vote = vote_counts[vote_counts == vote_counts.max()].index.tolist()
+    best_k = int(
+        km[km["k"].isin(top_vote)]
+        .sort_values("kmeans_avg_rank")
+        .iloc[0]["k"]
+    )
+ 
+    # ── 4. Best GMM covariance type for best_k ───────────────
+    gm_at_best_k = gm[gm["k"] == best_k].sort_values("gmm_avg_rank")
+    best_cov = str(gm_at_best_k.iloc[0]["covariance_type"]) if len(gm_at_best_k) > 0 else "full"
+ 
+    # ── 5. Print ─────────────────────────────────────────────
+    print("\n" + "=" * 70)
+    print("MODEL SELECTION — KMeans ranking (top {})".format(top_n))
+    print("=" * 70)
+    print(kmeans_ranking.round(4).to_string(index=False))
+ 
+    print("\n" + "=" * 70)
+    print("MODEL SELECTION — GMM ranking (top {}, all cov types)".format(top_n))
+    print("=" * 70)
+    print(gmm_ranking.round(4).to_string(index=False))
+ 
+    print("\n>>> Recommended k = {}  (most votes in top-3 across KMeans metrics)".format(best_k))
+    print(">>> Best GMM covariance for k={}: {}".format(best_k, best_cov))
+ 
+    return kmeans_ranking, gmm_ranking, best_k, best_cov
+    
 
 def phase_5c_fit_final_model(
     X_scaled,
@@ -919,9 +980,9 @@ def phase_5d_stability_kmeans(X_scaled, k, n_runs=10):
 
 kmeans_results, gmm_results = phase_5a_scan_models(X_scaled)
 
-summary = phase_5b_summarize_candidates(kmeans_results, gmm_results)
+kmeans_ranking, gmm_ranking, best_k, best_cov = phase_5b_summarize_candidates(kmeans_results, gmm_results)
 
-final_model, final_labels, final_metrics = phase_5c_fit_final_model(X_scaled, model_type="kmeans", k=3)
+final_model, final_labels, final_metrics = phase_5c_fit_final_model( X_scaled, model_type="kmeans", k=best_k)
 
 stability = phase_5d_stability_kmeans(X_scaled, k=3, n_runs=10)
 
@@ -980,58 +1041,64 @@ def phase_6_validate_and_profile(
 
 def phase_6_name_segments(cluster_profile: pd.DataFrame):
     df = cluster_profile.copy()
-
-    # Extract key behavioral columns
+ 
     metrics = {
-        "spend": "MONTHLY_AVG_PURCHASES_mean",
-        "cash": "CASH_ADVANCE_RATIO_mean",
-        "cash_volume": "MONTHLY_AVG_CASH_ADVANCE_mean",
-        "payment": "PRC_FULL_PAYMENT_mean",
-        "usage": "LIMIT_USAGE_mean"
+        "spend":        "MONTHLY_AVG_PURCHASES_mean",
+        "cash_volume":  "MONTHLY_AVG_CASH_ADVANCE_mean",
+        "payment":      "PRC_FULL_PAYMENT_mean",
+        "usage":        "LIMIT_USAGE_mean",
     }
-
-    # Ensure available columns
     metrics = {k: v for k, v in metrics.items() if v in df.columns}
-
-    # -----------------------------------
-    # 1. Rank clusters (relative, not absolute)
-    # -----------------------------------
+ 
+    # ── z-score each metric across clusters ──────────────────
+    HIGH = 0.75    # z-score threshold to call a dimension "high"
+    LOW  = -0.75   # z-score threshold to call a dimension "low"
+ 
     for key, col in metrics.items():
-        df[f"{key}_rank"] = df[col].rank(ascending=False, method="dense")
-
+        mu  = df[col].mean()
+        std = df[col].std(ddof=0)          # population std (few clusters)
+        if std < 1e-9:
+            df[f"z_{key}"] = 0.0           # constant across clusters → neutral
+        else:
+            df[f"z_{key}"] = (df[col] - mu) / std
+ 
     segment_names = {}
-
     for _, row in df.iterrows():
         c = row["Cluster"]
-
-        spend_rank = row.get("spend_rank", np.inf)
-        cash_rank = row.get("cash_rank", np.inf)
-        payment_rank = row.get("payment_rank", np.inf)
-        usage_rank = row.get("usage_rank", np.inf)
-
-        # -----------------------------------
-        # 2. Decision logic (relative)
-        # -----------------------------------
-        if cash_rank == 1:
+ 
+        z_spend   = row.get("z_spend",       0.0)
+        z_cash    = row.get("z_cash_volume",  0.0)
+        z_payment = row.get("z_payment",      0.0)
+        z_usage   = row.get("z_usage",        0.0)
+ 
+        # ── Decision rules (ordered by specificity) ──────────
+        if z_cash >= HIGH:
             name = "Cash Advance Heavy"
-
-        elif spend_rank == 1 and payment_rank <= 2:
+ 
+        elif z_spend >= HIGH and z_payment >= HIGH:
             name = "Active Transactor"
-
-        elif spend_rank >= df["spend_rank"].max() and usage_rank >= df["usage_rank"].max():
-            name = "Low Engagement"
-
-        elif usage_rank == 1 and payment_rank > 2:
+ 
+        elif z_usage >= HIGH and z_payment <= LOW:
             name = "Revolving Credit User"
-
+ 
+        elif z_spend <= LOW and z_usage <= LOW:
+            name = "Low Engagement"
+ 
         else:
             name = "Mixed Behavior"
-
+ 
         segment_names[c] = name
-
+ 
     df["Segment_Name"] = df["Cluster"].map(segment_names)
-
+ 
+    # ── drop helper z-score columns before returning ─────────
+    z_cols = [c for c in df.columns if c.startswith("z_")]
+    df = df.drop(columns=z_cols)
+ 
     return df, segment_names
+
+
+
 
 def phase_6_attach_segments(df_labeled: pd.DataFrame, segment_names: dict):
     df_out = df_labeled.copy()
@@ -1048,6 +1115,10 @@ df_labeled, cluster_validation, cluster_profile = phase_6_validate_and_profile(
 cluster_profile_named, segment_names = phase_6_name_segments(cluster_profile)
 
 df_final = phase_6_attach_segments(df_labeled, segment_names)
+
+
+
+
 
 
 def plot_phase_7_model_metrics(kmeans_results, gmm_results):
