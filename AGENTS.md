@@ -2,40 +2,43 @@
 
 This repository is a Vietnamese stock co-movement clustering research project.
 
-The goal is not only to make the code run. The goal is to produce a clean, reproducible experimental pipeline whose outputs can be used directly in the report section after the theoretical background.
+The main objective is to redesign the current local research code into a clean, reproducible experimental pipeline. The final outputs must support writing the report section “Thực nghiệm và kết quả” immediately after the theoretical background.
 
-Work carefully. Do not rewrite the whole project blindly. First understand the current research objective, current notebook logic, available data, and report requirements. Then refactor the code into a maintainable pipeline while preserving scientific traceability.
+Do not treat this as a normal app-only refactor. This is a research-code refactor. Correctness, traceability, reproducibility, and report alignment are more important than adding features quickly.
 
-## Project Goal
+## Project-Specific Objective
 
-The project studies clustering of Vietnamese stocks based on price movement and trading behavior. The core research direction is stock co-movement clustering.
+The project studies clustering of Vietnamese stocks based on price movement and trading behavior.
 
-Expected research outputs include:
+Expected outputs:
 
-- Clean input data description.
-- Feature engineering pipeline.
-- Return or log-return construction.
-- Similarity or distance matrix construction.
-- Clustering model execution.
-- Cluster validation and interpretation.
-- Experimental tables and figures suitable for the report.
-- A reproducible workflow from raw data to final results.
+- a reproducible data preprocessing pipeline,
+- a return or log-return construction pipeline,
+- a similarity or distance matrix construction pipeline,
+- a clustering pipeline,
+- quantitative evaluation tables,
+- cluster interpretation tables,
+- figures for the report,
+- clear experiment artifacts under `outputs/`,
+- report-ready notes for the “Thực nghiệm và kết quả” section.
 
-The final implementation must support writing the experimental and results section of the report immediately after the theoretical background.
+The implementation should make it possible to rerun the experiment and regenerate the results used in the report.
 
 ## Required First Reading
 
-Before editing code, read the following project files if they exist:
+Before editing code, inspect these files and folders if they exist:
 
 - `README.md`
 - `code_notebook.md`
-- all files under `report/`
-- all notebooks under `notebooks/`
-- all source files under `src/`
-- all data-loading or preprocessing scripts
-- all experiment-output or result folders
+- `report/`
+- `notebooks/`
+- `src/`
+- `data/`
+- `outputs/`
+- existing experiment scripts
+- existing result tables or figures
 
-If a required file is missing, state that it is missing in the work summary. Do not invent its contents.
+If a file or folder is missing, state that it is missing. Do not invent its content.
 
 ## Harness
 
@@ -48,6 +51,7 @@ This repo uses Harness. Before work, read:
 - `docs/CONTEXT_RULES.md`
 - `docs/TOOL_REGISTRY.md`
 - `docs/TEST_MATRIX.md`
+- `docs/TRACE_SPEC.md`
 - `scripts/bin/harness-cli query matrix` on macOS/Linux, or `.\scripts\bin\harness-cli.exe query matrix` on Windows
 
 Use the Rust Harness CLI at `scripts/bin/harness-cli` on macOS/Linux or `scripts/bin/harness-cli.exe` on Windows as the main operational tool.

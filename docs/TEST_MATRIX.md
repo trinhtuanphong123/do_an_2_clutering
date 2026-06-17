@@ -2,9 +2,6 @@
 
 This file maps product behavior to proof.
 
-No product behavior has been defined or implemented yet. Do not mark a row
-implemented until tests or validation evidence exist.
-
 ## Status Values
 
 | Status | Meaning |
@@ -19,7 +16,7 @@ implemented until tests or validation evidence exist.
 
 | Story | Contract | Unit | Integration | E2E | Platform | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| TBD | Add rows when story packets are created | no | no | no | no | planned | none |
+| US-001 | Reproducible stock co-movement experiment pipeline | yes | yes | no | no | implemented | `python -m compileall src` passed; `.\.venv\Scripts\python.exe -m unittest discover -s tests` passed 3 tests; `.\.venv\Scripts\python.exe -m src.run_experiment` failed safely because `data/vietnam_stocks.csv` is missing and no real stock outputs were generated. |
 
 ## Evidence Rules
 
